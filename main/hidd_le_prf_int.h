@@ -50,8 +50,8 @@
 #define HIDD_SUB_VER     0x00                     /*!< 次版本号 */
 #define HIDD_VERSION     ((HIDD_GREAT_VER<<8)|HIDD_SUB_VER)  /*!< 完整版本号（高8位主版本，低8位次版本）*/
 
-/// 最大同时连接的应用数
-#define HID_MAX_APPS                 1
+/// 最大同时连接的应用数（多连接模式，支持同时连接多台电脑）
+#define HID_MAX_APPS                 4
 
 /// HID 服务中定义的报告数量（鼠标输入 + 键盘输入 + CC输入 + LED输出 + Boot键盘输入 + Boot键盘输出 + Boot鼠标输入 + Feature + Vendor）
 #define HID_NUM_REPORTS          9
@@ -374,6 +374,7 @@ typedef struct {
     hidd_inst_t                  hidd_inst;                 /*!< HID 实例 */
     esp_hidd_event_cb_t          hidd_cb;                   /*!< 用户注册的回调函数 */
     uint8_t                      inst_id;                   /*!< 实例 ID */
+    uint8_t                      active_conn_count;         /*!< 当前活跃连接数（多连接管理用）*/
 } hidd_le_env_t;
 
 extern hidd_le_env_t hidd_le_env;     /*!< 全局 HID 环境变量 */

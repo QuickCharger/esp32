@@ -98,6 +98,7 @@ typedef union {
 
     /** ESP_HIDD_EVENT_BLE_DISCONNECT — BLE 断开事件参数 */
     struct hidd_disconnect_evt_param {
+        uint16_t conn_id;                   /*!< 断开连接的 conn_id（多连接模式用于区分哪台设备断开）*/
         esp_bd_addr_t remote_bda;           /*!< 远程设备蓝牙地址 */
     } disconnect;
 

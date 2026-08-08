@@ -47,6 +47,7 @@
 #include "esp_bt_device.h"
 #include "driver/gpio.h"
 #include "hid_dev.h"
+#include "web_ble_config.h"
 
 #define HID_DEMO_TAG "HID_DEMO"       /*!< 日志标签 */
 
@@ -54,9 +55,17 @@
  *                      全局变量
  * ===================================================================== */
 
-static uint16_t hid_conn_id = 0;      /*!< 当前 HID 连接 ID */
-static bool sec_conn = false;          /*!< 是否已建立安全连接（配对完成）*/
-static bool send_volum_up = false;     /*!< Demo 中控制音量+/-发送状态的标志 */
+/**
+ * @brief 多连接管理数据结构
+ *
+ * hid_conn_ids[]:  存储所有活跃连接的 conn_id，最多 HID_MAX_APPS 个
+ * hid_conn_count:  当前活跃连接数
+ * sec_conn:        是否至少有一个安全连接
+ */
+static uint16_t hid_conn_ids[HID_MAX_APPS] = {0};  /*!< 多连接 ID 数组 */
+static uint8_t  hid_conn_count = 0;                 /*!< 当前活跃连接数 */
+static bool     sec_conn = false;                   /*!< 是否至少有一个安全连接（配对完成）*/
+static bool     send_volum_up = false;              /*!< Demo 中控制音量+/-发送状态的标志 */
 #define CHAR_DECLARATION_SIZE   (sizeof(uint8_t))
 
 static void hidd_event_callback(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *param);
@@ -134,15 +143,38 @@ static void hidd_event_callback(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *
         }
         case ESP_HIDD_EVENT_DEINIT_FINISH:                   /* HID 反初始化完成 */
 	     break;
-        case ESP_HIDD_EVENT_BLE_CONNECT: {                   /* BLE 连接建立 */
-            ESP_LOGI(HID_DEMO_TAG, "ESP_HIDD_EVENT_BLE_CONNECT");
-            hid_conn_id = param->connect.conn_id;                  // 记录连接 ID，后续发送报告时使用
+        case ESP_HIDD_EVENT_BLE_CONNECT: {                   /* BLE 连接建立 — 多连接版 */
+            ESP_LOGI(HID_DEMO_TAG, "ESP_HIDD_EVENT_BLE_CONNECT, conn_id=%d", param->connect.conn_id);
+            // 将新连接的 conn_id 加入数组
+            if (hid_conn_count < HID_MAX_APPS) {
+                hid_conn_ids[hid_conn_count++] = param->connect.conn_id;
+                // 如果还有空闲连接槽位，重新开始广播让其他设备也能发现
+                if (hid_conn_count < HID_MAX_APPS) {
+                    esp_ble_gap_start_advertising(&hidd_adv_params);
+                    ESP_LOGI(HID_DEMO_TAG, "Still have free slots, restart advertising");
+                }
+            } else {
+                ESP_LOGW(HID_DEMO_TAG, "Max connections reached, rejecting conn_id=%d", param->connect.conn_id);
+            }
             break;
         }
-        case ESP_HIDD_EVENT_BLE_DISCONNECT: {                /* BLE 连接断开 */
-            sec_conn = false;
-            ESP_LOGI(HID_DEMO_TAG, "ESP_HIDD_EVENT_BLE_DISCONNECT");
-            esp_ble_gap_start_advertising(&hidd_adv_params);       // 断开后重新开始广播，等待新连接
+        case ESP_HIDD_EVENT_BLE_DISCONNECT: {                /* BLE 连接断开 — 多连接版 */
+            ESP_LOGI(HID_DEMO_TAG, "ESP_HIDD_EVENT_BLE_DISCONNECT, conn_id=%d", param->disconnect.conn_id);
+            // 从数组中移除断开的 conn_id
+            for (int i = 0; i < hid_conn_count; i++) {
+                if (hid_conn_ids[i] == param->disconnect.conn_id) {
+                    // 将最后一个元素移到当前位置（O(1) 删除）
+                    hid_conn_ids[i] = hid_conn_ids[--hid_conn_count];
+                    break;
+                }
+            }
+            // 有空闲连接槽位时，重新开始广播
+            if (hid_conn_count < HID_MAX_APPS) {
+                if (hid_conn_count == 0) {
+                    sec_conn = false;
+                }
+                esp_ble_gap_start_advertising(&hidd_adv_params);
+            }
             break;
         }
         case ESP_HIDD_EVENT_BLE_VENDOR_REPORT_WRITE_EVT: {   /* 主机写入 Vendor 报告 */
@@ -221,20 +253,29 @@ void hid_demo_task(void *pvParameters)
     vTaskDelay(1000 / portTICK_PERIOD_MS);                   // 等待系统初始化完成
     while(1) {
         vTaskDelay(2000 / portTICK_PERIOD_MS);               // 每 2 秒执行一次
-        if (sec_conn) {                                      // 仅在安全连接建立后发送
-            ESP_LOGI(HID_DEMO_TAG, "Send the volume");
+        if (sec_conn && hid_conn_count > 0) {                // 至少有一个安全连接时发送
+            ESP_LOGI(HID_DEMO_TAG, "Send the volume to %d connected device(s)", hid_conn_count);
             send_volum_up = true;
-            // 可选：发送键盘按键（注释掉的示例代码）
-            //uint8_t key_vaule = {HID_KEY_A};
-            //esp_hidd_send_keyboard_value(hid_conn_id, 0, &key_vaule, 1);
-            esp_hidd_send_consumer_value(hid_conn_id, HID_CONSUMER_VOLUME_UP, true);  // 按下音量+
+
+            // 遍历所有已连接的设备，向每台电脑发送相同的按键信息
+            for (int i = 0; i < hid_conn_count; i++) {
+                uint16_t conn_id = hid_conn_ids[i];
+                esp_hidd_send_consumer_value(conn_id, HID_CONSUMER_VOLUME_UP, true);  // 按下音量+
+            }
             vTaskDelay(3000 / portTICK_PERIOD_MS);
+
             if (send_volum_up) {
                 send_volum_up = false;
-                esp_hidd_send_consumer_value(hid_conn_id, HID_CONSUMER_VOLUME_UP, false);    // 释放音量+
-                esp_hidd_send_consumer_value(hid_conn_id, HID_CONSUMER_VOLUME_DOWN, true);   // 按下音量-
+                for (int i = 0; i < hid_conn_count; i++) {
+                    uint16_t conn_id = hid_conn_ids[i];
+                    esp_hidd_send_consumer_value(conn_id, HID_CONSUMER_VOLUME_UP, false);    // 释放音量+
+                    esp_hidd_send_consumer_value(conn_id, HID_CONSUMER_VOLUME_DOWN, true);   // 按下音量-
+                }
                 vTaskDelay(3000 / portTICK_PERIOD_MS);
-                esp_hidd_send_consumer_value(hid_conn_id, HID_CONSUMER_VOLUME_DOWN, false);  // 释放音量-
+                for (int i = 0; i < hid_conn_count; i++) {
+                    uint16_t conn_id = hid_conn_ids[i];
+                    esp_hidd_send_consumer_value(conn_id, HID_CONSUMER_VOLUME_DOWN, false);  // 释放音量-
+                }
             }
         }
     }
@@ -327,6 +368,9 @@ void app_main(void)
     esp_ble_gap_set_security_param(ESP_BLE_SM_SET_INIT_KEY, &init_key, sizeof(uint8_t));
     esp_ble_gap_set_security_param(ESP_BLE_SM_SET_RSP_KEY, &rsp_key, sizeof(uint8_t));
 
-    // 第9步：创建 Demo 任务（栈大小 2048 字节，优先级 5）
+    // 第9步：初始化 Web Bluetooth 配置服务（浏览器通过 BLE 读写 NVS）
+    web_ble_config_init();
+
+    // 第10步：创建 Demo 任务（栈大小 2048 字节，优先级 5）
     xTaskCreate(&hid_demo_task, "hid_task", 2048, NULL, 5, NULL);
 }

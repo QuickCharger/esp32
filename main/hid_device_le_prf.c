@@ -663,8 +663,10 @@ void esp_hidd_prf_cb_hdl(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if,
             break;
         }
         case ESP_GATTS_DISCONNECT_EVT: {                     /* BLE 连接断开 */
-			 if(hidd_le_env.hidd_cb != NULL) {
-                    (hidd_le_env.hidd_cb)(ESP_HIDD_EVENT_BLE_DISCONNECT, NULL);
+            esp_hidd_cb_param_t cb_param = {0};
+            cb_param.disconnect.conn_id = param->disconnect.conn_id;  // 传递 conn_id 给上层
+    if(hidd_le_env.hidd_cb != NULL) {
+                    (hidd_le_env.hidd_cb)(ESP_HIDD_EVENT_BLE_DISCONNECT, &cb_param);
              }
             hidd_clcb_dealloc(param->disconnect.conn_id);     // 释放连接控制块
             break;
@@ -764,6 +766,7 @@ void hidd_clcb_alloc (uint16_t conn_id, esp_bd_addr_t bda)
             p_clcb->conn_id     = conn_id;
             p_clcb->connected   = true;
             memcpy (p_clcb->remote_bda, bda, ESP_BD_ADDR_LEN);
+            hidd_le_env.active_conn_count++;         // 递增活跃连接计数
             break;
         }
     }
@@ -771,23 +774,22 @@ void hidd_clcb_alloc (uint16_t conn_id, esp_bd_addr_t bda)
 }
 
 /**
- * @brief 释放连接控制块（CLCB）
+ * @brief 释放连接控制块（多连接版本）
  *
- * 连接断开时，清空对应的控制块条目。
- *
- * @note 当前实现简单地清空第一个条目，适用于单连接场景。
- *       多连接场景下应根据 conn_id 查找对应的条目。
+ * 按 conn_id 查找匹配的控制块并清空，同时递减 active_conn_count。
  */
 bool hidd_clcb_dealloc (uint16_t conn_id)
 {
-    uint8_t              i_clcb = 0;
-    hidd_clcb_t      *p_clcb = NULL;
-
-    for (i_clcb = 0, p_clcb= hidd_le_env.hidd_clcb; i_clcb < HID_MAX_APPS; i_clcb++, p_clcb++) {
-            memset(p_clcb, 0, sizeof(hidd_clcb_t));  // 清空控制块
+    for (uint8_t i = 0; i < HID_MAX_APPS; i++) {
+        hidd_clcb_t *p_clcb = &hidd_le_env.hidd_clcb[i];
+        if (p_clcb->in_use && p_clcb->conn_id == conn_id) {
+            memset(p_clcb, 0, sizeof(hidd_clcb_t));          // 清空匹配的控制块
+            if (hidd_le_env.active_conn_count > 0) {
+                hidd_le_env.active_conn_count--;             // 递减活跃连接计数
+            }
             return true;
+        }
     }
-
     return false;
 }
 
@@ -800,11 +802,16 @@ static struct gatts_profile_inst heart_rate_profile_tab[PROFILE_NUM] = {
 
 };
 
+/// 前向声明：Web Bluetooth 配置服务的 GATT 事件处理
+extern void web_ble_config_gatts_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if,
+                                          esp_ble_gatts_cb_param_t *param);
+
 /**
  * @brief GATT 事件分发处理函数
  *
- * ESP-IDF GATT 层的事件会先到达这里，然后根据 gatts_if 分发给
- * 对应 Profile 的回调函数（esp_hidd_prf_cb_hdl）。
+ * ESP-IDF GATT 层的事件会先到达这里，然后分发给：
+ *   1. HID Profile 的回调函数（esp_hidd_prf_cb_hdl）
+ *   2. Web Bluetooth 配置服务的回调函数
  *
  * 对于 ESP_GATTS_REG_EVT 事件，先保存 gatts_if。
  */
@@ -819,15 +826,14 @@ static void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_
             ESP_LOGI(HID_LE_PRF_TAG, "Reg app failed, app_id %04x, status %d",
                     param->reg.app_id,
                     param->reg.status);
-            return;
         }
     }
 
-    /* 遍历所有 Profile 实例，将事件分发给匹配的回调函数 */
+    /* 1. 分发给 HID Profile */
     do {
         int idx;
         for (idx = 0; idx < PROFILE_NUM; idx++) {
-            if (gatts_if == ESP_GATT_IF_NONE ||          /* 不指定 gatts_if，需要调用所有 profile 回调 */
+            if (gatts_if == ESP_GATT_IF_NONE ||
                     gatts_if == heart_rate_profile_tab[idx].gatts_if) {
                 if (heart_rate_profile_tab[idx].gatts_cb) {
                     heart_rate_profile_tab[idx].gatts_cb(event, gatts_if, param);
@@ -835,6 +841,9 @@ static void gatts_event_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_
             }
         }
     } while (0);
+
+    /* 2. 分发给 Web Bluetooth 配置服务 */
+    web_ble_config_gatts_handler(event, gatts_if, param);
 }
 
 
