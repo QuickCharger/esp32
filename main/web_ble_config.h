@@ -20,6 +20,9 @@ extern "C" {
  */
 void web_ble_config_init(void);
 
+/** @brief 追加一条日志（存入 NVS，浏览器定时轮询读取）*/
+void web_ble_config_log(const char *format, ...);
+
 /**
  * @brief GATT 事件处理入口
  *

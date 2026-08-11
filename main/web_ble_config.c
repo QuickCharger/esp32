@@ -15,6 +15,8 @@
 
 #include "web_ble_config.h"
 #include <string.h>
+#include <stdarg.h>
+#include <stdio.h>
 #include "esp_log.h"
 #include "nvs_flash.h"
 #include "nvs.h"
@@ -27,7 +29,7 @@ static const char *TAG = "WEB_BLE_CFG";
  *                    自定义 GATT 服务 UUID
  * ===================================================================== */
 
-// Service: 12345678-1234-1234-1234-123456789abc
+// Service: 12345678-1234-1234-1234-123456789abcn
 #define WEB_CFG_SVC_UUID128  \
     0xbc, 0x9a, 0x78, 0x56, 0x34, 0x12, 0x34, 0x12, \
     0x34, 0x12, 0x34, 0x12, 0x78, 0x56, 0x34, 0x12
@@ -185,6 +187,55 @@ void web_ble_config_init(void)
 {
     web_cfg_nvs_load();
     esp_ble_gatts_app_register(WEB_CFG_APP_ID);
+}
+
+/* =====================================================================
+ *                    日志推送（通过 NVS 存储，浏览器定时轮询读取）
+ * ===================================================================== */
+
+#define WEB_CFG_LOG_KEY  "log"       /* NVS key for log */
+#define WEB_CFG_LOG_MAX  512         /* 最大日志长度 */
+
+void web_ble_config_log(const char *format, ...)
+{
+    nvs_handle_t handle;
+    if (nvs_open(WEB_CFG_NVS_NS, NVS_READWRITE, &handle) != ESP_OK) return;
+
+    char buf[WEB_CFG_LOG_MAX];
+    va_list args;
+    va_start(args, format);
+    int len = vsnprintf(buf, WEB_CFG_LOG_MAX, format, args);
+    va_end(args);
+
+    if (len > 0) {
+        if (len > WEB_CFG_LOG_MAX) len = WEB_CFG_LOG_MAX;
+        // 追加到已有日志后面
+        size_t old_len = 0;
+        nvs_get_blob(handle, WEB_CFG_LOG_KEY, NULL, &old_len);
+        size_t new_len = old_len + len;
+        if (new_len > WEB_CFG_LOG_MAX) {
+            old_len = WEB_CFG_LOG_MAX / 2;  // 保留后半段
+            new_len = old_len + len;
+        }
+        char *log_buf = malloc(new_len);
+        if (log_buf) {
+            if (old_len > 0) {
+                nvs_get_blob(handle, WEB_CFG_LOG_KEY, log_buf, &old_len);
+            }
+            memcpy(log_buf + old_len, buf, len);
+            nvs_set_blob(handle, WEB_CFG_LOG_KEY, log_buf, new_len);
+            nvs_commit(handle);
+            free(log_buf);
+
+            // 同时更新 Data Char 值为最新日志行（单独 key）
+            char line[WEB_CFG_CHAR_LEN];
+            int line_len = (len < WEB_CFG_CHAR_LEN) ? len : WEB_CFG_CHAR_LEN;
+            memcpy(line, buf, line_len);
+            nvs_set_blob(handle, "log_line", line, line_len);
+            nvs_commit(handle);
+        }
+    }
+    nvs_close(handle);
 }
 
 /* 全局 GATT 回调分发（在 ble_hidd_demo_main.c 的 gap_event_handler 中调用）*/
