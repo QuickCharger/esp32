@@ -3,7 +3,7 @@
 
 <head>
 	<meta charset="UTF-8">
-	<title>ESP32 Web Bluetooth 配置工具</title>
+	<title>ESP32 Web Bluetooth 控制台</title>
 	<style>
 		* {
 			box-sizing: border-box;
@@ -16,27 +16,28 @@
 			background: #1a1a2e;
 			color: #eee;
 			padding: 20px;
-			max-width: 600px;
+			max-width: 650px;
 			margin: 0 auto;
 		}
 
 		h1 {
 			text-align: center;
-			margin-bottom: 20px;
+			margin-bottom: 16px;
 			color: #00d4aa;
+			font-size: 18px;
 		}
 
 		.card {
 			background: #16213e;
 			border-radius: 10px;
-			padding: 20px;
-			margin-bottom: 16px;
+			padding: 16px;
+			margin-bottom: 14px;
 		}
 
 		.card h3 {
-			margin-bottom: 12px;
+			margin-bottom: 10px;
 			color: #00d4aa;
-			font-size: 14px;
+			font-size: 13px;
 			text-transform: uppercase;
 		}
 
@@ -44,11 +45,13 @@
 			background: #00d4aa;
 			color: #1a1a2e;
 			border: none;
-			padding: 10px 20px;
+			padding: 8px 16px;
 			border-radius: 6px;
 			cursor: pointer;
-			font-size: 14px;
+			font-size: 13px;
 			font-weight: bold;
+			margin-right: 6px;
+			margin-bottom: 4px;
 		}
 
 		button:hover {
@@ -65,34 +68,40 @@
 			color: #fff;
 		}
 
+		button.scan {
+			background: #3498db;
+			color: #fff;
+		}
+
+		button.connect {
+			background: #f39c12;
+			color: #fff;
+			font-size: 11px;
+			padding: 4px 10px;
+		}
+
 		input {
 			width: 100%;
-			padding: 10px;
+			padding: 8px;
 			border-radius: 6px;
 			border: 1px solid #333;
 			background: #0f3460;
 			color: #eee;
 			font-family: monospace;
-			font-size: 13px;
-			margin-bottom: 10px;
+			font-size: 12px;
+			margin-bottom: 8px;
 		}
 
 		.status {
-			font-size: 12px;
-			padding: 6px 10px;
+			font-size: 11px;
+			padding: 4px 8px;
 			border-radius: 4px;
 			display: inline-block;
-			margin-bottom: 10px;
+			margin-bottom: 8px;
 		}
 
 		.status.ok {
 			background: #27ae60;
-			color: #fff;
-		}
-
-		.status.err {
-			background: #e74c3c;
-			color: #fff;
 		}
 
 		.status.idle {
@@ -103,8 +112,8 @@
 		.log {
 			background: #0a0a1a;
 			border-radius: 6px;
-			padding: 12px;
-			max-height: 200px;
+			padding: 10px;
+			max-height: 220px;
 			overflow-y: auto;
 			font-family: monospace;
 			font-size: 11px;
@@ -112,25 +121,33 @@
 			word-break: break-all;
 		}
 
-		.flex-row {
+		.dev-item {
+			background: #0f3460;
+			border-radius: 6px;
+			padding: 8px 10px;
+			margin-bottom: 6px;
+			font-size: 12px;
 			display: flex;
-			gap: 10px;
+			justify-content: space-between;
 			align-items: center;
-			margin-bottom: 10px;
-			flex-wrap: wrap;
 		}
 
-		label {
-			font-size: 12px;
-			color: #aaa;
-			display: block;
-			margin-bottom: 4px;
+		.dev-item .info {
+			font-family: monospace;
+		}
+
+		.flex-row {
+			display: flex;
+			gap: 8px;
+			align-items: center;
+			margin-bottom: 8px;
+			flex-wrap: wrap;
 		}
 	</style>
 </head>
 
 <body>
-	<h1>ESP32 Web Bluetooth 配置工具</h1>
+	<h1>ESP32 Web Bluetooth 控制台</h1>
 
 	<div class="card">
 		<h3>设备连接</h3>
@@ -139,112 +156,126 @@
 			<button id="btnDisconnect" class="danger" onclick="disconnect()" disabled>断开</button>
 		</div>
 		<span id="connStatus" class="status idle">未连接</span>
-		<div id="deviceInfo" style="font-size:12px; color:#aaa;"></div>
 	</div>
 
 	<div class="card">
-		<h3>写入数据（保存到 NVS）</h3>
-		<label>HEX 格式，如: 48 65 6c 6c 6f</label>
-		<input id="hexInput" placeholder="48 65 6c 6c 6f (Hello)">
+		<h3>BLE Central — 扫描/连接外设</h3>
 		<div class="flex-row">
-			<button id="btnSend" onclick="writeData()" disabled>写入并保存</button>
-			<button onclick="document.getElementById('hexInput').value=''">清空</button>
+			<button id="btnScan" class="scan" onclick="sendCmd('SCAN')" disabled>扫描蓝牙设备</button>
+		</div>
+		<div id="devList"><span style="font-size:12px;color:#888;">点击扫描后，设备列表显示在这里</span></div>
+	</div>
+
+	<div class="card">
+		<h3>音量控制</h3>
+		<div class="flex-row">
+			<button id="btnVolUp" onclick="sendCmd('VOLUP')" disabled>🔊 音量+</button>
+			<button id="btnVolDown" onclick="sendCmd('VOLDOWN')" disabled>🔉 音量-</button>
 		</div>
 	</div>
 
 	<div class="card">
-		<h3>读取数据</h3>
-		<button id="btnRead" onclick="readData()" disabled>读取 NVS 数据</button>
-		<div id="readResult" style="margin-top:10px; font-family:monospace; font-size:12px; color:#00d4aa;"></div>
+		<h3>NVS 数据读写</h3>
+		<input id="hexInput" placeholder="HEX: 48 65 6c 6c 6f (Hello)">
+		<div class="flex-row">
+			<button id="btnSend" onclick="writeData()" disabled>写入 NVS</button>
+			<button id="btnRead" onclick="readData()" disabled>读取 NVS</button>
+		</div>
+		<div id="readResult" style="font-size:12px; color:#00d4aa; font-family:monospace;"></div>
 	</div>
 
 	<div class="card">
-		<h3>ESP32 日志（自动刷新）</h3>
+		<h3>日志（自动刷新）</h3>
 		<div class="log" id="logArea">等待连接...</div>
-		<button style="margin-top:8px; font-size:11px; padding:4px 10px;"
+		<button style="margin-top:6px; font-size:11px; padding:4px 8px;"
 			onclick="document.getElementById('logArea').textContent=''">清空</button>
 	</div>
 
 	<script>
 		const SVC_UUID = '12345678-1234-1234-1234-123456789abc'
 		const CHAR_UUID = '87654321-4321-4321-4321-cba987654321'
+		let device, server, characteristic, logTimer, lastLog = ''
+		let devices = {}  // 扫描到的设备 {addr: {name, rssi}}
 
-		let device = null, server = null, characteristic = null, logTimer = null, lastLog = ''
-
-		function log (msg) {
+		function log (m) {
 			const a = document.getElementById('logArea')
-			a.textContent += '[' + new Date().toLocaleTimeString() + '] ' + msg + '\n'
+			a.textContent += '[' + new Date().toLocaleTimeString() + '] ' + m + '\n'
 			a.scrollTop = a.scrollHeight
 		}
 
 		function setUI (ok) {
-			['btnConnect', 'btnDisconnect', 'btnSend', 'btnRead'].forEach((id, i) => {
-				document.getElementById(id).disabled = ok ? (i === 0) : (i !== 0)
-			})
-			const s = document.getElementById('connStatus')
-			s.textContent = ok ? '已连接' : '未连接'
-			s.className = 'status ' + (ok ? 'ok' : 'idle')
+			['btnConnect', 'btnDisconnect', 'btnScan', 'btnSend', 'btnRead', 'btnVolUp', 'btnVolDown'].forEach((id, i) => { document.getElementById(id).disabled = ok ? (i === 0) : (i !== 0) })
+			const s = document.getElementById('connStatus'); s.textContent = ok ? '已连接' : '未连接'; s.className = 'status ' + (ok ? 'ok' : 'idle')
+		}
+
+		// 解析 DEV|addr|rssi|name 格式日志，添加到设备列表
+		function handleDevLog (line) {
+			const parts = line.split('|')
+			if (parts.length >= 5) {
+				const addr = parts[1], type = parts[2], rssi = parts[3], name = parts[4]
+				devices[addr] = { name, rssi, type }
+				renderDevices()
+			}
+		}
+
+		function renderDevices () {
+			const list = document.getElementById('devList')
+			const addrs = Object.keys(devices)
+			if (addrs.length === 0) { list.innerHTML = '<span style="font-size:12px;color:#888;">暂无设备</span>'; return }
+			list.innerHTML = ''
+			for (const addr of addrs) {
+				const d = devices[addr]
+				const item = document.createElement('div')
+				item.className = 'dev-item'
+				item.innerHTML = '<span class="info">' + addr + ' | ' + d.name + ' | RSSI:' + d.rssi + '</span>'
+				const btn = document.createElement('button')
+				btn.className = 'connect'
+				btn.textContent = '连接'
+				btn.onclick = () => { sendCmd('CONNECT ' + addr + ' ' + d.type); log('请求连接: ' + addr + ' type=' + d.type) }
+				item.appendChild(btn)
+				list.appendChild(item)
+			}
 		}
 
 		async function connect () {
 			try {
 				log('搜索 BLE 设备...')
 				device = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: [SVC_UUID] })
-				log('已发现: ' + (device.name || 'HID') + ', 连接 GATT...')
 				device.addEventListener('gattserverdisconnected', () => { log('设备断开'); setUI(false); clearInterval(logTimer) })
 				server = await device.gatt.connect()
-				log('GATT 已连接, 获取服务...')
 				const svc = await server.getPrimaryService(SVC_UUID)
 				characteristic = await svc.getCharacteristic(CHAR_UUID)
-				document.getElementById('deviceInfo').textContent = '设备: ' + (device.name || 'ESP32')
-				log('连接成功！每秒自动读取日志...')
+				log('连接成功！')
 				setUI(true)
-
-				// 每秒轮询读取日志
 				logTimer = setInterval(async () => {
 					try {
 						const v = await characteristic.readValue()
-						const bytes = new Uint8Array(v.buffer)
-						const text = new TextDecoder().decode(bytes).replace(/\0+$/, '').trim()
-						if (text && text !== lastLog) { lastLog = text; log(text) }
+						const t = new TextDecoder().decode(new Uint8Array(v.buffer)).replace(/\0+$/, '').trim()
+						if (t && t !== lastLog) { lastLog = t; if (t.startsWith('DEV|')) { handleDevLog(t) } log(t) }
 					} catch (e) { }
 				}, 1000)
-			} catch (e) { log('失败: ' + e.message); console.error(e) }
+			} catch (e) { log('失败: ' + e.message) }
 		}
 
-		function disconnect () {
-			clearInterval(logTimer)
-			if (device && device.gatt.connected) { device.gatt.disconnect(); log('已断开'); setUI(false) }
+		function disconnect () { clearInterval(logTimer); if (device && device.gatt.connected) { device.gatt.disconnect(); log('已断开'); setUI(false) } }
+
+		async function sendCmd (cmd) {
+			try { await characteristic.writeValue(new TextEncoder().encode('CMD:' + cmd)); log('发送命令: ' + cmd) } catch (e) { log('命令失败: ' + e.message) }
 		}
 
 		async function writeData () {
 			const h = document.getElementById('hexInput').value.trim().replace(/\s/g, '')
-			if (!h || h.length % 2) { log('HEX 格式错误'); return }
+			if (!h || h.length % 2) { log('HEX格式错误'); return }
 			const d = new Uint8Array(h.length / 2)
-			for (let i = 0; i < h.length; i += 2) d[i / 2] = parseInt(h.substr(i, 2), 16)
-			try { await characteristic.writeValue(d); log('已写入 NVS: ' + Array.from(d).map(b => b.toString(16).padStart(2, '0')).join(' ')) } catch (e) { log('写入失败: ' + e.message) }
+			for (let i = 0; i < h.length; i += 2)d[i / 2] = parseInt(h.substr(i, 2), 16)
+			try { await characteristic.writeValue(d); log('已写入: ' + Array.from(d).map(b => b.toString(16).padStart(2, '0')).join(' ')) } catch (e) { log('失败: ' + e.message) }
 		}
 
 		async function readData () {
-			try {
-				const v = await characteristic.readValue()
-				const bytes = new Uint8Array(v.buffer)
-				const hex = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(' ')
-				let t = bytes.length; while (t > 0 && bytes[t - 1] === 0) t--
-				const text = t > 0 ? String.fromCharCode(...bytes.slice(0, t)) : '(空)'
-				document.getElementById('readResult').textContent = 'HEX: ' + hex + '\nASCII: ' + text
-				log('读取 NVS (' + t + '字节): ' + text)
-			} catch (e) { log('读取失败: ' + e.message) }
+			try { const v = await characteristic.readValue(); const b = new Uint8Array(v.buffer); let t = b.length; while (t > 0 && b[t - 1] === 0) t--; const txt = t > 0 ? String.fromCharCode(...b.slice(0, t)) : '(空)'; document.getElementById('readResult').textContent = 'HEX: ' + Array.from(b).map(x => x.toString(16).padStart(2, '0')).join(' ') + '\nASCII: ' + txt; log('读取(' + t + '字节): ' + txt) } catch (e) { log('失败: ' + e.message) }
 		}
 
-		window.onload = () => {
-			if (!('bluetooth' in navigator)) {
-				document.getElementById('btnConnect').disabled = true
-				document.getElementById('connStatus').textContent = '浏览器不支持 Web Bluetooth'
-				document.getElementById('connStatus').className = 'status err'
-				log('错误: 请使用 Chrome/Edge')
-			} else { log('Web Bluetooth API 可用，请点击连接按钮') }
-		};
+		window.onload = () => { if (!('bluetooth' in navigator)) { log('请使用 Chrome/Edge') } else { log('Web Bluetooth 就绪') } };
 	</script>
 </body>
 

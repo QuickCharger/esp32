@@ -1,7 +1,7 @@
 # 注册组件：声明本组件的源文件和头文件目录
 # - SRCS: 本组件包含的所有 .c 源文件
 # - INCLUDE_DIRS: 头文件搜索路径（当前目录）
-idf_component_register(SRCS "ble_hidd_demo_main.c"
+idf_component_register(SRCS "ble_cent.c" "ble_hidd_demo_main.c"
                             "esp_hidd_prf_api.c"
                             "hid_dev.c"
                             "hid_device_le_prf.c"

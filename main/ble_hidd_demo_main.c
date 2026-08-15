@@ -48,6 +48,7 @@
 #include "driver/gpio.h"
 #include "hid_dev.h"
 #include "web_ble_config.h"
+#include "ble_cent.h"
 
 #define HID_DEMO_TAG "HID_DEMO"       /*!< 日志标签 */
 
@@ -107,13 +108,25 @@ static esp_ble_adv_data_t hidd_adv_data = {
 
 /** @brief 广播参数配置 */
 static esp_ble_adv_params_t hidd_adv_params = {
-    .adv_int_min        = ESP_BLE_GAP_ADV_ITVL_MS(20), /*!< 最小广播间隔：20ms */
-    .adv_int_max        = ESP_BLE_GAP_ADV_ITVL_MS(30), /*!< 最大广播间隔：30ms */
+    .adv_int_min        = ESP_BLE_GAP_ADV_ITVL_MS(200), /*!< 最小广播间隔：200ms（释放射频给多连接）*/
+    .adv_int_max        = ESP_BLE_GAP_ADV_ITVL_MS(300), /*!< 最大广播间隔：300ms */
     .adv_type           = ADV_TYPE_IND,                /*!< 广播类型：可连接、可扫描、不定向 */
     .own_addr_type      = BLE_ADDR_TYPE_PUBLIC,        /*!< 使用公共地址 */
     .channel_map        = ADV_CHNL_ALL,                /*!< 在所有广播信道（37/38/39）上广播 */
     .adv_filter_policy = ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY, /*!< 允许任何设备扫描和连接 */
 };
+
+/** @brief 停止广播（扫描外设时调用，释放射频）*/
+void hidd_adv_stop(void)
+{
+    esp_ble_gap_stop_advertising();
+}
+
+/** @brief 恢复广播（扫描结束后调用）*/
+void hidd_adv_start(void)
+{
+    esp_ble_gap_start_advertising(&hidd_adv_params);
+}
 
 /* =====================================================================
  *                    HID 事件回调处理
@@ -236,6 +249,8 @@ static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param
     default:
         break;
     }
+    /* 转发给 BLE Central 模块处理扫描事件 */
+    ble_cent_gap_handler(event, param);
 }
 
 /* =====================================================================
@@ -248,36 +263,58 @@ static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param
  * 在安全连接建立后，每 2 秒发送一次消费者控制命令（音量+、音量-）。
  * 这是一个循环演示任务，实际应用中应替换为真正的键盘/鼠标输入处理。
  */
+/**
+ * @brief 向所有已连接的电脑发送音量控制
+ *
+ * 由 HTML 按钮触发，通过命令调用。不再自动定时发送。
+ *
+ * @param volume_up true=音量增大, false=音量降低
+ */
+void hidd_send_volume(bool volume_up)
+{
+    if (!sec_conn || hid_conn_count == 0) {
+        web_ble_config_log("[HID] 无安全连接，无法发送音量");
+        return;
+    }
+
+    uint8_t cmd = volume_up ? HID_CONSUMER_VOLUME_UP : HID_CONSUMER_VOLUME_DOWN;
+
+    // 按下
+    for (int i = 0; i < hid_conn_count; i++) {
+        esp_hidd_send_consumer_value(hid_conn_ids[i], cmd, true);
+    }
+    vTaskDelay(200 / portTICK_PERIOD_MS);   // 短暂保持
+    // 释放
+    for (int i = 0; i < hid_conn_count; i++) {
+        esp_hidd_send_consumer_value(hid_conn_ids[i], cmd, false);
+    }
+
+    web_ble_config_log("[HID] 已向 %d 台设备发送%s", hid_conn_count, volume_up ? "音量+" : "音量-");
+}
+
+/**
+ * @brief 转发鼠标数据给所有已连接的电脑
+ *
+ * 由 BLE Central 模块收到鼠标报告后调用。
+ *
+ * @param mouse_button  按键状态（位掩码）
+ * @param mickeys_x     X 轴移动量
+ * @param mickeys_y     Y 轴移动量
+ */
+void hidd_forward_mouse(uint8_t mouse_button, int8_t mickeys_x, int8_t mickeys_y)
+{
+    if (hid_conn_count == 0) return;
+
+    for (int i = 0; i < hid_conn_count; i++) {
+        esp_hidd_send_mouse_value(hid_conn_ids[i], mouse_button, mickeys_x, mickeys_y);
+    }
+}
+
 void hid_demo_task(void *pvParameters)
 {
-    vTaskDelay(1000 / portTICK_PERIOD_MS);                   // 等待系统初始化完成
+    // Demo 任务已停用自动音量发送，仅保留任务占位
     while(1) {
-        vTaskDelay(2000 / portTICK_PERIOD_MS);               // 每 2 秒执行一次
-        if (sec_conn && hid_conn_count > 0) {                // 至少有一个安全连接时发送
-            ESP_LOGI(HID_DEMO_TAG, "Send the volume to %d connected device(s)", hid_conn_count);
-            send_volum_up = true;
-
-            // 遍历所有已连接的设备，向每台电脑发送相同的按键信息
-            for (int i = 0; i < hid_conn_count; i++) {
-                uint16_t conn_id = hid_conn_ids[i];
-                esp_hidd_send_consumer_value(conn_id, HID_CONSUMER_VOLUME_UP, true);  // 按下音量+
-            }
-            vTaskDelay(3000 / portTICK_PERIOD_MS);
-
-            if (send_volum_up) {
-                send_volum_up = false;
-                for (int i = 0; i < hid_conn_count; i++) {
-                    uint16_t conn_id = hid_conn_ids[i];
-                    esp_hidd_send_consumer_value(conn_id, HID_CONSUMER_VOLUME_UP, false);    // 释放音量+
-                    esp_hidd_send_consumer_value(conn_id, HID_CONSUMER_VOLUME_DOWN, true);   // 按下音量-
-                }
-                vTaskDelay(3000 / portTICK_PERIOD_MS);
-                for (int i = 0; i < hid_conn_count; i++) {
-                    uint16_t conn_id = hid_conn_ids[i];
-                    esp_hidd_send_consumer_value(conn_id, HID_CONSUMER_VOLUME_DOWN, false);  // 释放音量-
-                }
-            }
-        }
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
     }
 }
 
@@ -370,6 +407,7 @@ void app_main(void)
 
     // 第9步：初始化 Web Bluetooth 配置服务（浏览器通过 BLE 读写 NVS）
     web_ble_config_init();
+    ble_cent_init();
 
     // 第10步：创建 Demo 任务（栈大小 2048 字节，优先级 5）
     xTaskCreate(&hid_demo_task, "hid_task", 2048, NULL, 5, NULL);

@@ -14,9 +14,13 @@
  */
 
 #include "web_ble_config.h"
+#include "ble_cent.h"
+
+extern void hidd_send_volume(bool volume_up);
 #include <string.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include "esp_log.h"
 #include "nvs_flash.h"
 #include "nvs.h"
@@ -101,9 +105,15 @@ static uint16_t svc_handle = 0;
 static uint16_t char_handle = 0;
 static esp_gatt_if_t g_web_cfg_gatts_if = ESP_GATT_IF_NONE;  /* 保存 GATT 接口句柄 */
 
+/* 日志内存缓冲（避免在 BLE 回调中写 NVS 导致崩溃）*/
+static char     g_log_buf[WEB_CFG_CHAR_LEN] = {0};
+static uint16_t g_log_len = 0;
+
 /* =====================================================================
  *                    GATT 事件回调
  * ===================================================================== */
+
+static void web_cfg_handle_command(const char *cmd);
 
 static void web_cfg_gatts_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if,
                                    esp_ble_gatts_cb_param_t *param)
@@ -149,11 +159,17 @@ static void web_cfg_gatts_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatt
                 esp_gatt_rsp_t rsp;
                 memset(&rsp, 0, sizeof(rsp));
                 rsp.attr_value.handle = char_handle;
-                rsp.attr_value.len = g_cfg_data_len;
-                memcpy(rsp.attr_value.value, g_cfg_data, g_cfg_data_len);
+
+                // 优先返回内存中的最新日志，否则返回 NVS 数据
+                if (g_log_len > 0) {
+                    rsp.attr_value.len = g_log_len;
+                    memcpy(rsp.attr_value.value, g_log_buf, g_log_len);
+                } else {
+                    rsp.attr_value.len = g_cfg_data_len;
+                    memcpy(rsp.attr_value.value, g_cfg_data, g_cfg_data_len);
+                }
                 esp_ble_gatts_send_response(gatts_if, param->read.conn_id,
                                              param->read.trans_id, ESP_GATT_OK, &rsp);
-                ESP_LOGI(TAG, "Read request: sent %d bytes", g_cfg_data_len);
             }
             break;
 
@@ -162,8 +178,16 @@ static void web_cfg_gatts_handler(esp_gatts_cb_event_t event, esp_gatt_if_t gatt
                 uint16_t len = param->write.len;
                 if (len > WEB_CFG_CHAR_LEN) len = WEB_CFG_CHAR_LEN;
 
-                // 保存到 NVS
-                web_cfg_nvs_save(param->write.value, len);
+                // 检查是否是命令（以 "CMD:" 开头）
+                if (len >= 4 && memcmp(param->write.value, "CMD:", 4) == 0) {
+                    char cmd[WEB_CFG_CHAR_LEN];
+                    memcpy(cmd, param->write.value, len);
+                    cmd[len] = '\0';
+                    web_cfg_handle_command(cmd + 4);
+                } else {
+                    // 保存到 NVS
+                    web_cfg_nvs_save(param->write.value, len);
+                }
 
                 // 发送确认响应
                 if (param->write.need_rsp) {
@@ -193,49 +217,55 @@ void web_ble_config_init(void)
  *                    日志推送（通过 NVS 存储，浏览器定时轮询读取）
  * ===================================================================== */
 
-#define WEB_CFG_LOG_KEY  "log"       /* NVS key for log */
-#define WEB_CFG_LOG_MAX  512         /* 最大日志长度 */
-
 void web_ble_config_log(const char *format, ...)
 {
-    nvs_handle_t handle;
-    if (nvs_open(WEB_CFG_NVS_NS, NVS_READWRITE, &handle) != ESP_OK) return;
+    char buf[WEB_CFG_CHAR_LEN];
 
-    char buf[WEB_CFG_LOG_MAX];
+    // 1. 同时输出到串口（便于 monitor 调试）
     va_list args;
     va_start(args, format);
-    int len = vsnprintf(buf, WEB_CFG_LOG_MAX, format, args);
+    vsnprintf(buf, WEB_CFG_CHAR_LEN, format, args);
     va_end(args);
+    ESP_LOGI(TAG, "%s", buf);
 
-    if (len > 0) {
-        if (len > WEB_CFG_LOG_MAX) len = WEB_CFG_LOG_MAX;
-        // 追加到已有日志后面
-        size_t old_len = 0;
-        nvs_get_blob(handle, WEB_CFG_LOG_KEY, NULL, &old_len);
-        size_t new_len = old_len + len;
-        if (new_len > WEB_CFG_LOG_MAX) {
-            old_len = WEB_CFG_LOG_MAX / 2;  // 保留后半段
-            new_len = old_len + len;
-        }
-        char *log_buf = malloc(new_len);
-        if (log_buf) {
-            if (old_len > 0) {
-                nvs_get_blob(handle, WEB_CFG_LOG_KEY, log_buf, &old_len);
-            }
-            memcpy(log_buf + old_len, buf, len);
-            nvs_set_blob(handle, WEB_CFG_LOG_KEY, log_buf, new_len);
-            nvs_commit(handle);
-            free(log_buf);
+    // 2. 写入内存缓冲供 HTML 轮询
+    int len = strlen(buf);
+    memcpy(g_log_buf, buf, (len < WEB_CFG_CHAR_LEN) ? len : WEB_CFG_CHAR_LEN);
+    g_log_len = (len < WEB_CFG_CHAR_LEN) ? len : WEB_CFG_CHAR_LEN;
+}
 
-            // 同时更新 Data Char 值为最新日志行（单独 key）
-            char line[WEB_CFG_CHAR_LEN];
-            int line_len = (len < WEB_CFG_CHAR_LEN) ? len : WEB_CFG_CHAR_LEN;
-            memcpy(line, buf, line_len);
-            nvs_set_blob(handle, "log_line", line, line_len);
-            nvs_commit(handle);
+/* =====================================================================
+ *                    命令处理
+ * ===================================================================== */
+
+static void web_cfg_handle_command(const char *cmd)
+{
+    ESP_LOGI(TAG, "CMD: %s", cmd);
+    if (strcmp(cmd, "SCAN") == 0) {
+        ble_cent_start_scan();
+    } else if (strncmp(cmd, "CONNECT ", 8) == 0) {
+        // CMD:CONNECT aabbccddeeff type
+        // 解析地址和地址类型（type 可选，默认 public）
+        const char *p = cmd + 8;
+        char addr[13] = {0};
+        uint8_t addr_type = BLE_ADDR_TYPE_PUBLIC;
+        int i = 0;
+        while (p[i] != '\0' && p[i] != ' ' && i < 12) {
+            addr[i] = p[i];
+            i++;
         }
+        addr[i] = '\0';
+        if (p[i] == ' ') {
+            addr_type = (uint8_t)atoi(p + i + 1);
+        }
+        ble_cent_connect(addr, addr_type);
+    } else if (strcmp(cmd, "VOLUP") == 0) {
+        hidd_send_volume(true);
+    } else if (strcmp(cmd, "VOLDOWN") == 0) {
+        hidd_send_volume(false);
+    } else {
+        web_ble_config_log("未知命令: %s", cmd);
     }
-    nvs_close(handle);
 }
 
 /* 全局 GATT 回调分发（在 ble_hidd_demo_main.c 的 gap_event_handler 中调用）*/
