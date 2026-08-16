@@ -49,12 +49,11 @@ static int g_x_bit_offset = -1, g_x_size = 0;
 static int g_y_bit_offset = -1, g_y_size = 0;
 static int g_wheel_bit_offset = -1, g_wheel_size = 0;
 static int g_btn_bit_offset = -1, g_btn_size = 0;
-static int g_x_log_min = 0, g_x_log_max = 0;   /* X 轴逻辑范围，用于自动缩放 */
-static int g_y_log_min = 0, g_y_log_max = 0;   /* Y 轴逻辑范围 */
+static int g_mouse_report_len = 0;   /* 鼠标报告字节数（由 Report Map 计算，用于过滤 vendor 报告）*/
 
 static void parse_report_map(const uint8_t *data, int len);
 static int extract_field(const uint8_t *report, int len, int bit_offset, int size);
-static int scale_to_int8(int raw, int log_min, int log_max);
+static int8_t clamp_to_int8(int raw);
 static uint16_t g_conn_id = 0;
 static uint16_t g_hid_svc_start = 0;
 static uint16_t g_hid_svc_end = 0;
@@ -275,20 +274,37 @@ static void ble_cent_gattc_cb(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if
         // 收到 HID 报告
         uint8_t *data = param->notify.value;
         uint16_t len = param->notify.value_len;
+        uint16_t handle = param->notify.handle;
+
+        // 限流调试日志：每 100 个通知打印一次摘要，避免高频串口阻塞导致死机
+        static uint32_t notify_count = 0;
+        notify_count++;
+        if ((notify_count % 100) == 1) {
+            web_ble_config_log("[CENT] 通知#%lu handle=%d len=%d 鼠标报告=%d字节",
+                               (unsigned long)notify_count, handle, len, g_mouse_report_len);
+        }
+
+        // 只解析鼠标报告：按报告长度过滤掉其他报告（如罗技 vendor 报告 19 字节）
+        if (g_mouse_report_len <= 0 || len != g_mouse_report_len) {
+            break;
+        }
 
         // 根据 Report Map 解析结果提取字段（自动，非硬编码）
         if (g_mouse_queue && g_x_bit_offset >= 0 && g_y_bit_offset >= 0) {
             mouse_event_t ev;
             int raw_x = extract_field(data, len, g_x_bit_offset, g_x_size);
             int raw_y = extract_field(data, len, g_y_bit_offset, g_y_size);
-
-            // 按钮：低 3 位即左/右/中键（HID 规范 Button 1/2/3 与 ESP-IDF API 位 0/1/2 对齐）
             int raw_btn = extract_field(data, len, g_btn_bit_offset, g_btn_size);
-            ev.button = (uint8_t)(raw_btn & 0x07);
 
-            // 根据描述符的 Logical Min/Max 自动缩放到 int8（非硬编码因子）
-            ev.x = (int8_t)scale_to_int8(raw_x, g_x_log_min, g_x_log_max);
-            ev.y = (int8_t)scale_to_int8(raw_y, g_y_log_min, g_y_log_max);
+            ev.button = (uint8_t)(raw_btn & 0x07);
+            ev.x = clamp_to_int8(raw_x);
+            ev.y = clamp_to_int8(raw_y);
+
+            // 限流解析日志
+            if ((notify_count % 100) == 1) {
+                web_ble_config_log("[CENT] 解析 raw_x=%d raw_y=%d btn=0x%x -> x=%d y=%d",
+                                   raw_x, raw_y, ev.button, ev.x, ev.y);
+            }
 
             // 非阻塞入队，队列满则丢弃（限流）
             xQueueSend(g_mouse_queue, &ev, 0);
@@ -315,16 +331,16 @@ static void mouse_send_task(void *param)
 }
 
 /**
- * @brief 根据 Logical Min/Max 将原始值自动缩放到 -127~127
+ * @brief 将鼠标移动增量截断到 int8 范围
+ *
+ * HID 鼠标报告的 X/Y 是相对位移增量（通常 1~几十），
+ * 直接截断到 int8 即可，不做比例缩放（缩放会把小增量归零）。
  */
-static int scale_to_int8(int raw, int log_min, int log_max)
+static int8_t clamp_to_int8(int raw)
 {
-    int range = log_max - log_min;
-    if (range <= 0) return (raw > 0) ? 1 : ((raw < 0) ? -1 : 0);
-    int scaled = raw * 127 / (range / 2);
-    if (scaled > 127) scaled = 127;
-    if (scaled < -127) scaled = -127;
-    return scaled;
+    if (raw > 127) return 127;
+    if (raw < -127) return -127;
+    return (int8_t)raw;
 }
 
 /**
@@ -363,11 +379,14 @@ static void parse_report_map(const uint8_t *data, int len)
     uint16_t usage_page = 0;
     uint16_t usages[8] = {0};
     int usage_count = 0;
-    int usage_min = 0, usage_max = 0;
-    int logical_min = 0, logical_max = 0;
+    int usage_max = 0;
     int report_size = 0;
     int report_count = 0;
-    int bit_offset = 0;
+    int bit_offset = 0;          /* 当前报告内的位偏移 */
+    int report_id = 0;           /* 当前 Report ID（描述符未声明 ID 时为 0）*/
+    int mouse_report_id = -1;    /* 包含鼠标字段（按钮/X/Y/滚轮）的 Report ID */
+    int report_bits = 0;         /* 当前报告已累计的位数 */
+    int mouse_report_bits = 0;   /* 鼠标报告的总位数 */
 
     int i = 0;
     while (i < len) {
@@ -382,57 +401,83 @@ static void parse_report_map(const uint8_t *data, int len)
             val |= ((uint32_t)data[i++]) << (j * 8);
         }
 
-        if (item_type == 0) {  // Main item
-            if (item_tag == 0x8) {  // Input (0x81)
-                // 记录 X/Y/Wheel 字段（HID 规范固定 Usage ID）
+        if (item_type == 0) {  /* Main item */
+            if (item_tag == 0x8) {  /* Input (0x81) */
+                bool is_mouse_input = false;
+
+                /* X/Y/Wheel 字段（Generic Desktop Page 0x01 + 固定 Usage ID）*/
                 for (int u = 0; u < usage_count; u++) {
                     uint16_t usage = usages[u];
-                    int offset = bit_offset + u * report_size;  // 每个 usage 递增一个字段宽度
+                    int offset = bit_offset + u * report_size;  /* 每个 usage 递增一个字段宽度 */
                     if (usage_page == 0x01 && usage == 0x30) {
                         g_x_bit_offset = offset; g_x_size = report_size;
-                        g_x_log_min = logical_min; g_x_log_max = logical_max;
+                        is_mouse_input = true;
                     } else if (usage_page == 0x01 && usage == 0x31) {
                         g_y_bit_offset = offset; g_y_size = report_size;
-                        g_y_log_min = logical_min; g_y_log_max = logical_max;
+                        is_mouse_input = true;
                     } else if (usage_page == 0x01 && usage == 0x38) {
                         g_wheel_bit_offset = offset; g_wheel_size = report_size;
+                        is_mouse_input = true;
                     }
                 }
-                // 按钮字段（Button Page 0x09 + Usage Min/Max）
+
+                /* 按钮字段（Button Page 0x09 + Usage Min/Max）*/
                 if (usage_page == 0x09 && usage_max > 0 && g_btn_bit_offset < 0) {
                     g_btn_bit_offset = bit_offset;
-                    g_btn_size = report_size * report_count;  // 完整按钮位图
+                    g_btn_size = report_size * report_count;  /* 完整按钮位图 */
+                    is_mouse_input = true;
                 }
-                // 累计总位数
+
+                /* 该 Input 属于鼠标报告 → 记录其 Report ID */
+                if (is_mouse_input && mouse_report_id < 0) {
+                    mouse_report_id = report_id;
+                }
+
+                /* 累计当前报告的位数 */
                 bit_offset += report_size * report_count;
+                report_bits += report_size * report_count;
                 usage_count = 0;
                 usage_max = 0;
             }
-        } else if (item_type == 1) {  // Global item
+        } else if (item_type == 1) {  /* Global item */
             switch (item_tag) {
-                case 0x0: usage_page = (uint16_t)val; break;  // Usage Page
-                case 0x1: logical_min = (int16_t)val; break;  // Logical Minimum（有符号）
-                case 0x5: logical_max = (int16_t)val; break;  // Logical Maximum（有符号）
-                case 0x7: report_size = (int)val; break;       // Report Size
-                case 0x9: report_count = (int)val; break;      // Report Count
-                case 0x8: bit_offset = 8; break;               // Report ID：字段从 bit 8 开始
+                case 0x0: usage_page = (uint16_t)val; break;  /* Usage Page */
+                case 0x7: report_size = (int)val; break;       /* Report Size */
+                case 0x9: report_count = (int)val; break;      /* Report Count */
+                case 0x8:  /* Report ID：新报告开始，字段从 bit 0 重新计 */
+                    /* 上一个报告若是鼠标报告，保存其位数 */
+                    if (report_id == mouse_report_id) {
+                        mouse_report_bits = report_bits;
+                    }
+                    report_id = (int)val;
+                    bit_offset = 0;
+                    report_bits = 0;
+                    break;
                 default: break;
             }
-        } else if (item_type == 2) {  // Local item
+        } else if (item_type == 2) {  /* Local item */
             switch (item_tag) {
-                case 0x0:  // Usage
+                case 0x0:  /* Usage */
                     if (usage_count < 8) usages[usage_count++] = (uint16_t)val;
                     break;
-                case 0x1: usage_min = (int)val; break;  // Usage Minimum
-                case 0x2: usage_max = (int)val; break;  // Usage Maximum
+                case 0x2: usage_max = (int)val; break;  /* Usage Maximum */
                 default: break;
             }
         }
     }
 
-    web_ble_config_log("[CENT] Report Map 解析: X=%d(%dbit) Y=%d(%dbit) Wheel=%d(%dbit) Btn=%d(%dbit)",
+    /* 循环结束：处理最后一个报告 */
+    if (report_id == mouse_report_id) {
+        mouse_report_bits = report_bits;
+    }
+
+    /* 鼠标报告长度 = 鼠标报告位数向上取整到字节 */
+    g_mouse_report_len = (mouse_report_bits + 7) / 8;
+
+    web_ble_config_log("[CENT] Report Map 解析: X=%d(%dbit) Y=%d(%dbit) Wheel=%d(%dbit) Btn=%d(%dbit) 鼠标报告ID=%d 长度=%d字节",
                        g_x_bit_offset, g_x_size, g_y_bit_offset, g_y_size,
-                       g_wheel_bit_offset, g_wheel_size, g_btn_bit_offset, g_btn_size);
+                       g_wheel_bit_offset, g_wheel_size, g_btn_bit_offset, g_btn_size,
+                       mouse_report_id, g_mouse_report_len);
 }
 
 /**
