@@ -21,7 +21,7 @@
 /* 外部广播控制函数（在 ble_hidd_demo_main.c 中定义）*/
 extern void hidd_adv_stop(void);
 extern void hidd_adv_start(void);
-extern void hidd_forward_mouse(uint8_t mouse_button, int8_t mickeys_x, int8_t mickeys_y);
+extern void hidd_forward_mouse(uint8_t mouse_button, int8_t mickeys_x, int8_t mickeys_y, int8_t wheel, int8_t ac_pan);
 #define SCAN_DURATION 10  /* 扫描持续秒数 */
 
 /* BLE HID 相关 UUID */
@@ -36,9 +36,11 @@ static int  g_scan_count = 0;
 
 /* 鼠标事件队列（解耦 BLE 回调与发送，避免回调中直接发送导致崩溃）*/
 typedef struct {
-    uint8_t button;
+    uint8_t button;   /* 按键位图，bit0=左键 bit1=右键 bit2=中键 bit3~7=扩展按键 */
     int8_t  x;
     int8_t  y;
+    int8_t  wheel;    /* 垂直滚轮 */
+    int8_t  pan;      /* 水平滚轮 AC Pan */
 } mouse_event_t;
 
 static QueueHandle_t g_mouse_queue = NULL;
@@ -48,6 +50,7 @@ static void mouse_send_task(void *param);
 static int g_x_bit_offset = -1, g_x_size = 0;
 static int g_y_bit_offset = -1, g_y_size = 0;
 static int g_wheel_bit_offset = -1, g_wheel_size = 0;
+static int g_pan_bit_offset = -1, g_pan_size = 0;   /* 水平滚轮 AC Pan（Usage 0x238）*/
 static int g_btn_bit_offset = -1, g_btn_size = 0;
 static int g_mouse_report_len = 0;   /* 鼠标报告字节数（由 Report Map 计算，用于过滤 vendor 报告）*/
 
@@ -295,15 +298,19 @@ static void ble_cent_gattc_cb(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if
             int raw_x = extract_field(data, len, g_x_bit_offset, g_x_size);
             int raw_y = extract_field(data, len, g_y_bit_offset, g_y_size);
             int raw_btn = extract_field(data, len, g_btn_bit_offset, g_btn_size);
+            int raw_wheel = extract_field(data, len, g_wheel_bit_offset, g_wheel_size);
+            int raw_pan = extract_field(data, len, g_pan_bit_offset, g_pan_size);
 
-            ev.button = (uint8_t)(raw_btn & 0x07);
+            ev.button = (uint8_t)raw_btn;   // 完整按钮位图（支持 8 个按钮）
             ev.x = clamp_to_int8(raw_x);
             ev.y = clamp_to_int8(raw_y);
+            ev.wheel = clamp_to_int8(raw_wheel);
+            ev.pan = clamp_to_int8(raw_pan);
 
             // 限流解析日志
             if ((notify_count % 100) == 1) {
-                web_ble_config_log("[CENT] 解析 raw_x=%d raw_y=%d btn=0x%x -> x=%d y=%d",
-                                   raw_x, raw_y, ev.button, ev.x, ev.y);
+                web_ble_config_log("[CENT] 解析 btn=0x%x x=%d y=%d wheel=%d pan=%d",
+                                   ev.button, ev.x, ev.y, ev.wheel, ev.pan);
             }
 
             // 非阻塞入队，队列满则丢弃（限流）
@@ -325,7 +332,7 @@ static void mouse_send_task(void *param)
     mouse_event_t ev;
     while (1) {
         if (xQueueReceive(g_mouse_queue, &ev, portMAX_DELAY) == pdTRUE) {
-            hidd_forward_mouse(ev.button, ev.x, ev.y);
+            hidd_forward_mouse(ev.button, ev.x, ev.y, ev.wheel, ev.pan);
         }
     }
 }
@@ -405,7 +412,7 @@ static void parse_report_map(const uint8_t *data, int len)
             if (item_tag == 0x8) {  /* Input (0x81) */
                 bool is_mouse_input = false;
 
-                /* X/Y/Wheel 字段（Generic Desktop Page 0x01 + 固定 Usage ID）*/
+                /* X/Y/Wheel/AC Pan 字段（Generic Desktop Page 0x01 + 固定 Usage ID）*/
                 for (int u = 0; u < usage_count; u++) {
                     uint16_t usage = usages[u];
                     int offset = bit_offset + u * report_size;  /* 每个 usage 递增一个字段宽度 */
@@ -417,6 +424,9 @@ static void parse_report_map(const uint8_t *data, int len)
                         is_mouse_input = true;
                     } else if (usage_page == 0x01 && usage == 0x38) {
                         g_wheel_bit_offset = offset; g_wheel_size = report_size;
+                        is_mouse_input = true;
+                    } else if (usage_page == 0x01 && usage == 0x238) {
+                        g_pan_bit_offset = offset; g_pan_size = report_size;
                         is_mouse_input = true;
                     }
                 }
@@ -474,9 +484,10 @@ static void parse_report_map(const uint8_t *data, int len)
     /* 鼠标报告长度 = 鼠标报告位数向上取整到字节 */
     g_mouse_report_len = (mouse_report_bits + 7) / 8;
 
-    web_ble_config_log("[CENT] Report Map 解析: X=%d(%dbit) Y=%d(%dbit) Wheel=%d(%dbit) Btn=%d(%dbit) 鼠标报告ID=%d 长度=%d字节",
+    web_ble_config_log("[CENT] Report Map 解析: X=%d(%dbit) Y=%d(%dbit) Wheel=%d(%dbit) Pan=%d(%dbit) Btn=%d(%dbit) 鼠标报告ID=%d 长度=%d字节",
                        g_x_bit_offset, g_x_size, g_y_bit_offset, g_y_size,
-                       g_wheel_bit_offset, g_wheel_size, g_btn_bit_offset, g_btn_size,
+                       g_wheel_bit_offset, g_wheel_size, g_pan_bit_offset, g_pan_size,
+                       g_btn_bit_offset, g_btn_size,
                        mouse_report_id, g_mouse_report_len);
 }
 

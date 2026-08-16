@@ -194,11 +194,13 @@ void esp_hidd_send_keyboard_value(uint16_t conn_id, key_mask_t special_key_mask,
  * @brief   发送鼠标报告
  *
  * @param[in] conn_id       连接 ID
- * @param[in] mouse_button  鼠标按键状态（左/中/右键）
+ * @param[in] mouse_button  鼠标按键状态（位掩码，bit0=左键 bit1=右键 bit2=中键 ...）
  * @param[in] mickeys_x     X 轴移动量（有符号，正值向右）
  * @param[in] mickeys_y     Y 轴移动量（有符号，正值向上）
+ * @param[in] wheel         垂直滚轮（有符号，正值向上滚动）
+ * @param[in] ac_pan        水平滚轮/AC Pan（有符号，正值向右滚动）
  */
-void esp_hidd_send_mouse_value(uint16_t conn_id, uint8_t mouse_button, int8_t mickeys_x, int8_t mickeys_y);
+void esp_hidd_send_mouse_value(uint16_t conn_id, uint8_t mouse_button, int8_t mickeys_x, int8_t mickeys_y, int8_t wheel, int8_t ac_pan);
 
 #ifdef __cplusplus
 }

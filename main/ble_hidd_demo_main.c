@@ -297,16 +297,18 @@ void hidd_send_volume(bool volume_up)
  *
  * 由 BLE Central 模块收到鼠标报告后调用。
  *
- * @param mouse_button  按键状态（位掩码）
+ * @param mouse_button  按键状态（位掩码，bit0=左键 bit1=右键 bit2=中键 ...）
  * @param mickeys_x     X 轴移动量
  * @param mickeys_y     Y 轴移动量
+ * @param wheel         垂直滚轮
+ * @param ac_pan        水平滚轮
  */
-void hidd_forward_mouse(uint8_t mouse_button, int8_t mickeys_x, int8_t mickeys_y)
+void hidd_forward_mouse(uint8_t mouse_button, int8_t mickeys_x, int8_t mickeys_y, int8_t wheel, int8_t ac_pan)
 {
     if (hid_conn_count == 0) return;
 
     for (int i = 0; i < hid_conn_count; i++) {
-        esp_hidd_send_mouse_value(hid_conn_ids[i], mouse_button, mickeys_x, mickeys_y);
+        esp_hidd_send_mouse_value(hid_conn_ids[i], mouse_button, mickeys_x, mickeys_y, wheel, ac_pan);
     }
 }
 

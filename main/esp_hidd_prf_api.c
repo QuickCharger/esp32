@@ -179,26 +179,28 @@ void esp_hidd_send_keyboard_value(uint16_t conn_id, key_mask_t special_key_mask,
  * @brief 发送鼠标报告
  *
  * 鼠标输入报告格式（5 字节）：
- * - Byte 0: 按键状态（左/中/右键）
+ * - Byte 0: 按键状态位图（bit0=左键 bit1=右键 bit2=中键 bit3~7=扩展按键）
  * - Byte 1: X 轴移动量（有符号，正值向右）
  * - Byte 2: Y 轴移动量（有符号，正值向上）
- * - Byte 3: 滚轮（Wheel）
- * - Byte 4: AC Pan（水平滚动）
+ * - Byte 3: 垂直滚轮 Wheel（有符号，正值向上）
+ * - Byte 4: 水平滚轮 AC Pan（有符号，正值向右）
  *
  * @param conn_id       连接 ID
- * @param mouse_button  按键状态
+ * @param mouse_button  按键状态位图
  * @param mickeys_x     X 轴移动
  * @param mickeys_y     Y 轴移动
+ * @param wheel         垂直滚轮
+ * @param ac_pan        水平滚轮
  */
-void esp_hidd_send_mouse_value(uint16_t conn_id, uint8_t mouse_button, int8_t mickeys_x, int8_t mickeys_y)
+void esp_hidd_send_mouse_value(uint16_t conn_id, uint8_t mouse_button, int8_t mickeys_x, int8_t mickeys_y, int8_t wheel, int8_t ac_pan)
 {
     uint8_t buffer[HID_MOUSE_IN_RPT_LEN];
 
     buffer[0] = mouse_button;    // Byte 0: 按键
     buffer[1] = mickeys_x;       // Byte 1: X 移动
     buffer[2] = mickeys_y;       // Byte 2: Y 移动
-    buffer[3] = 0;               // Byte 3: 滚轮（未使用）
-    buffer[4] = 0;               // Byte 4: AC Pan（未使用）
+    buffer[3] = wheel;           // Byte 3: 垂直滚轮
+    buffer[4] = ac_pan;          // Byte 4: 水平滚轮
 
     hid_dev_send_report(hidd_le_env.gatt_if, conn_id,
                         HID_RPT_ID_MOUSE_IN, HID_REPORT_TYPE_INPUT, HID_MOUSE_IN_RPT_LEN, buffer);
