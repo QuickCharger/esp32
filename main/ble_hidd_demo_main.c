@@ -67,6 +67,7 @@ static uint16_t hid_conn_ids[HID_MAX_APPS] = {0};  /*!< 多连接 ID 数组 */
 static uint8_t  hid_conn_count = 0;                 /*!< 当前活跃连接数 */
 static bool     sec_conn = false;                   /*!< 是否至少有一个安全连接（配对完成）*/
 static bool     send_volum_up = false;              /*!< Demo 中控制音量+/-发送状态的标志 */
+static bool     g_adv_delay_pending = false;        /*!< 是否已有待执行的延迟广播任务（防重复创建）*/
 #define CHAR_DECLARATION_SIZE   (sizeof(uint8_t))
 
 static void hidd_event_callback(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *param);
@@ -108,8 +109,8 @@ static esp_ble_adv_data_t hidd_adv_data = {
 
 /** @brief 广播参数配置 */
 static esp_ble_adv_params_t hidd_adv_params = {
-    .adv_int_min        = ESP_BLE_GAP_ADV_ITVL_MS(500), /*!< 最小广播间隔：500ms（降低广播射频占用，减少争用断联）*/
-    .adv_int_max        = ESP_BLE_GAP_ADV_ITVL_MS(600), /*!< 最大广播间隔：600ms */
+    .adv_int_min        = ESP_BLE_GAP_ADV_ITVL_MS(300), /*!< 最小广播间隔：300ms（折中：可发现性与射频争用）*/
+    .adv_int_max        = ESP_BLE_GAP_ADV_ITVL_MS(400), /*!< 最大广播间隔：400ms */
     .adv_type           = ADV_TYPE_IND,                /*!< 广播类型：可连接、可扫描、不定向 */
     .own_addr_type      = BLE_ADDR_TYPE_PUBLIC,        /*!< 使用公共地址 */
     .channel_map        = ADV_CHNL_ALL,                /*!< 在所有广播信道（37/38/39）上广播 */
@@ -126,6 +127,25 @@ void hidd_adv_stop(void)
 void hidd_adv_start(void)
 {
     esp_ble_gap_start_advertising(&hidd_adv_params);
+}
+
+/** @brief 延迟恢复广播（连接刚建立时立即广播可能失败，延迟等连接稳定）*/
+static void hidd_adv_start_delayed(void *param)
+{
+    vTaskDelay(500 / portTICK_PERIOD_MS);   // 延迟 500ms
+    esp_err_t err = esp_ble_gap_start_advertising(&hidd_adv_params);
+    ESP_LOGI(HID_DEMO_TAG, "delayed adv restart, ret=%d", err);
+    g_adv_delay_pending = false;
+    vTaskDelete(NULL);
+}
+
+/** @brief 请求延迟重启广播（防重复创建任务）*/
+static void hidd_adv_restart_delayed(void)
+{
+    if (!g_adv_delay_pending) {
+        g_adv_delay_pending = true;
+        xTaskCreate(hidd_adv_start_delayed, "adv_delay", 2048, NULL, 5, NULL);
+    }
 }
 
 /* =====================================================================
@@ -161,9 +181,9 @@ static void hidd_event_callback(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *
             // 将新连接的 conn_id 加入数组
             if (hid_conn_count < HID_MAX_APPS) {
                 hid_conn_ids[hid_conn_count++] = param->connect.conn_id;
-                // 如果还有空闲连接槽位，重新开始广播让其他设备也能发现
+                // 如果还有空闲连接槽位，延迟重新广播让其他设备也能发现
                 if (hid_conn_count < HID_MAX_APPS) {
-                    esp_ble_gap_start_advertising(&hidd_adv_params);
+                    hidd_adv_restart_delayed();
                     ESP_LOGI(HID_DEMO_TAG, "Still have free slots, restart advertising");
                 }
             } else {
@@ -181,12 +201,12 @@ static void hidd_event_callback(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *
                     break;
                 }
             }
-            // 有空闲连接槽位时，重新开始广播
+            // 有空闲连接槽位时，延迟重新开始广播
             if (hid_conn_count < HID_MAX_APPS) {
                 if (hid_conn_count == 0) {
                     sec_conn = false;
                 }
-                esp_ble_gap_start_advertising(&hidd_adv_params);
+                hidd_adv_restart_delayed();
             }
             break;
         }

@@ -200,6 +200,7 @@ static void ble_cent_gattc_cb(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if
                            param->open.status, param->open.conn_id);
         if (param->open.status == ESP_GATT_OK) {
             g_scanning = false;   // 确保扫描状态正确（连接建立后扫描已结束）
+            hidd_adv_start();     // Central 连接建立过程可能暂停了广播，这里恢复，保证手机/电脑随时可发现
             // 启动服务发现
             esp_ble_gattc_search_service(gattc_if, param->open.conn_id, NULL);
         }
