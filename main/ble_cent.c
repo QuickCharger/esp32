@@ -32,7 +32,27 @@ extern void hidd_forward_mouse(uint8_t mouse_button, int8_t mickeys_x, int8_t mi
 
 static esp_gatt_if_t g_gattc_if = ESP_GATT_IF_NONE;
 static bool g_scanning = false;
+static bool g_restart_scan = false;   /* 停止扫描后是否需重启（用于扫描卡住时强制重启）*/
 static int  g_scan_count = 0;
+
+/* 扫描参数（全局保存，供强制重启扫描时复用）*/
+static esp_ble_scan_params_t g_scan_params = {
+    .own_addr_type = BLE_ADDR_TYPE_PUBLIC,   /* 使用公共地址，避免随机地址未设置 */
+    .scan_filter_policy = BLE_SCAN_FILTER_ALLOW_ALL,
+    .scan_type = BLE_SCAN_TYPE_ACTIVE,   /* 主动扫描，可获取设备名称 */
+    .scan_duplicate = BLE_SCAN_DUPLICATE_DISABLE,  /* 关闭去重，避免漏报 */
+    .scan_interval = 160,                /* 100ms 扫描间隔 */
+    .scan_window = 160,                  /* 100% 占空比，提高扫描灵敏度 */
+};
+
+/* 开始一轮扫描（设置参数，等待 PARAM_SET_COMPLETE 后自动开始）*/
+static void ble_cent_scan_begin(void)
+{
+    g_scanning = true;
+    g_scan_count = 0;
+    hidd_adv_stop();   /* 暂停广播，释放射频给扫描 */
+    esp_ble_gap_set_scan_params(&g_scan_params);
+}
 
 /* 鼠标事件队列（解耦 BLE 回调与发送，避免回调中直接发送导致崩溃）*/
 typedef struct {
@@ -126,8 +146,15 @@ void ble_cent_gap_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *
 
     case ESP_GAP_BLE_SCAN_STOP_COMPLETE_EVT:
         g_scanning = false;
-        web_ble_config_log("[CENT] 扫描完成, 共发现 %d 个设备", g_scan_count);
-        hidd_adv_start();   /* 恢复广播 */
+        if (g_restart_scan) {
+            /* 上次扫描卡住被强制停止，现在重启 */
+            g_restart_scan = false;
+            ble_cent_scan_begin();
+            web_ble_config_log("[CENT] 重新开始扫描...");
+        } else {
+            web_ble_config_log("[CENT] 扫描完成, 共发现 %d 个设备", g_scan_count);
+            hidd_adv_start();   /* 恢复广播（电脑需随时可连接）*/
+        }
         break;
 
     default:
@@ -173,8 +200,6 @@ static void ble_cent_gattc_cb(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if
                            param->open.status, param->open.conn_id);
         if (param->open.status == ESP_GATT_OK) {
             g_scanning = false;   // 确保扫描状态正确（连接建立后扫描已结束）
-            // 连接建立后停止广播，释放射频给连接
-            hidd_adv_stop();
             // 启动服务发现
             esp_ble_gattc_search_service(gattc_if, param->open.conn_id, NULL);
         }
@@ -332,9 +357,32 @@ static void mouse_send_task(void *param)
 {
     mouse_event_t ev;
     while (1) {
-        if (xQueueReceive(g_mouse_queue, &ev, portMAX_DELAY) == pdTRUE) {
-            hidd_forward_mouse(ev.button, ev.x, ev.y, ev.wheel, ev.pan);
+        // 阻塞等待第一个鼠标事件（队列空时任务休眠，不占 CPU）
+        if (xQueueReceive(g_mouse_queue, &ev, portMAX_DELAY) != pdTRUE) {
+            continue;
         }
+
+        // 合并随后约 10ms 内到达的事件，降低转发频率（约 50~100Hz），
+        // 减少射频争用，避免与其他连接/广播冲突导致监督超时断联。
+        mouse_event_t merged = ev;
+        TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(10);
+        while (xTaskGetTickCount() < deadline) {
+            mouse_event_t e;
+            // 带超时的阻塞接收（最多等 2ms），避免忙轮询占满 CPU
+            if (xQueueReceive(g_mouse_queue, &e, pdMS_TO_TICKS(2)) == pdTRUE) {
+                merged.button = e.button;   // 按钮取最新状态
+                merged.x += e.x;            // 位移累加
+                merged.y += e.y;
+                merged.wheel += e.wheel;
+                merged.pan += e.pan;
+            }
+        }
+
+        merged.x = clamp_to_int8(merged.x);
+        merged.y = clamp_to_int8(merged.y);
+        merged.wheel = clamp_to_int8(merged.wheel);
+        merged.pan = clamp_to_int8(merged.pan);
+        hidd_forward_mouse(merged.button, merged.x, merged.y, merged.wheel, merged.pan);
     }
 }
 
@@ -529,6 +577,7 @@ static void cccd_write_task(void *param)
 void ble_cent_connect(const char *addr_str, uint8_t addr_type)
 {
     // 停止可能残留的扫描（释放射频给连接），并重置扫描状态
+    g_restart_scan = false;   /* 连接时取消重启扫描 */
     if (g_scanning) {
         g_scanning = false;
         esp_ble_gap_stop_scanning();
@@ -551,7 +600,7 @@ void ble_cent_connect(const char *addr_str, uint8_t addr_type)
         .interval_min = 24,             // 24 * 1.25ms = 30ms 连接间隔
         .interval_max = 40,             // 40 * 1.25ms = 50ms 连接间隔
         .latency = 0,                   // 从设备延迟
-        .supervision_timeout = 600,     // 600 * 10ms = 6秒 监督超时
+        .supervision_timeout = 3200,    // 3200 * 10ms = 32秒 监督超时（BLE 规范最大值，最大容忍鼠标静止）
         .min_ce_len = 0,
         .max_ce_len = 0,
     };
@@ -598,28 +647,13 @@ void ble_cent_init(void)
 void ble_cent_start_scan(void)
 {
     if (g_scanning) {
-        web_ble_config_log("[CENT] 扫描正在进行中...");
+        /* 上次扫描卡住未结束，先停止，等 STOP_COMPLETE 后强制重启 */
+        g_restart_scan = true;
+        esp_ble_gap_stop_scanning();
+        web_ble_config_log("[CENT] 上次扫描未结束，强制重启...");
         return;
     }
-    g_scanning = true;
-    g_scan_count = 0;
-    hidd_adv_stop();   /* 暂停广播，释放射频给扫描 */
+    ble_cent_scan_begin();
     web_ble_config_log("[CENT] 开始扫描 BLE 设备...（已暂停广播）");
-
-    // 配置扫描参数
-    esp_ble_scan_params_t scan_params = {
-        .own_addr_type = BLE_ADDR_TYPE_PUBLIC,   /* 使用公共地址，避免随机地址未设置 */
-        .scan_filter_policy = BLE_SCAN_FILTER_ALLOW_ALL,
-        .scan_type = BLE_SCAN_TYPE_ACTIVE,   /* 主动扫描，可获取设备名称 */
-        .scan_duplicate = BLE_SCAN_DUPLICATE_DISABLE,  /* 关闭去重，避免漏报 */
-        .scan_interval = 160,                /* 100ms 扫描间隔 */
-        .scan_window = 160,                  /* 100% 占空比，提高扫描灵敏度 */
-    };
-
-    esp_err_t ret = esp_ble_gap_set_scan_params(&scan_params);
-    if (ret != ESP_OK) {
-        g_scanning = false;
-        web_ble_config_log("[CENT] 设置扫描参数失败: %d", ret);
-    }
     // 等待 ESP_GAP_BLE_SCAN_PARAM_SET_COMPLETE_EVT 后自动开始扫描
 }

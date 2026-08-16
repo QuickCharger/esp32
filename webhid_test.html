@@ -161,7 +161,7 @@
 	<div class="card">
 		<h3>BLE Central — 扫描/连接外设</h3>
 		<div class="flex-row">
-			<button id="btnScan" class="scan" onclick="sendCmd('SCAN')" disabled>扫描蓝牙设备</button>
+			<button id="btnScan" class="scan" onclick="startScan()" disabled>扫描蓝牙设备</button>
 		</div>
 		<div id="devList"><span style="font-size:12px;color:#888;">点击扫描后，设备列表显示在这里</span></div>
 	</div>
@@ -218,9 +218,15 @@
 			}
 		}
 
-		// 全量解析累积日志：DEV 行→设备列表，其他行→日志区
-		function renderLogs (text) {
+		// 开始扫描：先清空设备列表，再发送 SCAN 命令
+		async function startScan () {
 			devices = {}
+			renderDevices()
+			await sendCmd('SCAN')
+		}
+
+		// 全量解析累积日志：DEV 行→设备列表（增量累积，不清空），其他行→日志区
+		function renderLogs (text) {
 			const logLines = []
 			const lines = text.split('\n')
 			for (const line of lines) {

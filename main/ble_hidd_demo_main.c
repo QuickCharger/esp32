@@ -108,8 +108,8 @@ static esp_ble_adv_data_t hidd_adv_data = {
 
 /** @brief 广播参数配置 */
 static esp_ble_adv_params_t hidd_adv_params = {
-    .adv_int_min        = ESP_BLE_GAP_ADV_ITVL_MS(200), /*!< 最小广播间隔：200ms（释放射频给多连接）*/
-    .adv_int_max        = ESP_BLE_GAP_ADV_ITVL_MS(300), /*!< 最大广播间隔：300ms */
+    .adv_int_min        = ESP_BLE_GAP_ADV_ITVL_MS(500), /*!< 最小广播间隔：500ms（降低广播射频占用，减少争用断联）*/
+    .adv_int_max        = ESP_BLE_GAP_ADV_ITVL_MS(600), /*!< 最大广播间隔：600ms */
     .adv_type           = ADV_TYPE_IND,                /*!< 广播类型：可连接、可扫描、不定向 */
     .own_addr_type      = BLE_ADDR_TYPE_PUBLIC,        /*!< 使用公共地址 */
     .channel_map        = ADV_CHNL_ALL,                /*!< 在所有广播信道（37/38/39）上广播 */
