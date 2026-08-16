@@ -15,6 +15,7 @@
 
 #include "web_ble_config.h"
 #include "ble_cent.h"
+#include "bt_hid_host.h"
 
 extern void hidd_send_volume(bool volume_up);
 #include <string.h>
@@ -269,6 +270,19 @@ static void web_cfg_handle_command(const char *cmd)
             addr_type = (uint8_t)atoi(p + i + 1);
         }
         ble_cent_connect(addr, addr_type);
+    } else if (strcmp(cmd, "BTSCAN") == 0) {
+        bt_hid_host_start_discovery();
+    } else if (strncmp(cmd, "BTCONNECT ", 10) == 0) {
+        // CMD:BTCONNECT aabbccddeeff（经典蓝牙 HID 设备地址，无冒号）
+        const char *p = cmd + 10;
+        char addr[13] = {0};
+        int i = 0;
+        while (p[i] != '\0' && p[i] != ' ' && i < 12) {
+            addr[i] = p[i];
+            i++;
+        }
+        addr[i] = '\0';
+        bt_hid_host_connect(addr);
     } else if (strcmp(cmd, "VOLUP") == 0) {
         hidd_send_volume(true);
     } else if (strcmp(cmd, "VOLDOWN") == 0) {

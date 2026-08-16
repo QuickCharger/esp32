@@ -6,6 +6,7 @@ idf_component_register(SRCS "ble_cent.c" "ble_hidd_demo_main.c"
                             "hid_dev.c"
                             "hid_device_le_prf.c"
                             "web_ble_config.c"
+                            "bt_hid_host.c"
                     INCLUDE_DIRS ".")
 
 # 编译选项：忽略"未使用的常量变量"警告（HID Report Map 中有些常量可能未在代码中引用）

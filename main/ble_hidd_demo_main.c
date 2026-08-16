@@ -49,6 +49,7 @@
 #include "hid_dev.h"
 #include "web_ble_config.h"
 #include "ble_cent.h"
+#include "bt_hid_host.h"
 
 #define HID_DEMO_TAG "HID_DEMO"       /*!< 日志标签 */
 
@@ -332,6 +333,24 @@ void hidd_forward_mouse(uint8_t mouse_button, int8_t mickeys_x, int8_t mickeys_y
     }
 }
 
+/**
+ * @brief 转发键盘数据给所有已连接的电脑
+ *
+ * 由经典蓝牙 HID Host 模块收到键盘报告后调用。
+ *
+ * @param special_key_mask  修饰键掩码（Ctrl/Shift/Alt/GUI）
+ * @param keyboard_cmd      按键码数组（HID_KEY_* 键值）
+ * @param num_key           按键数量（最多 6 个）
+ */
+void hidd_forward_keyboard(uint8_t special_key_mask, uint8_t *keyboard_cmd, uint8_t num_key)
+{
+    if (hid_conn_count == 0) return;
+
+    for (int i = 0; i < hid_conn_count; i++) {
+        esp_hidd_send_keyboard_value(hid_conn_ids[i], special_key_mask, keyboard_cmd, num_key);
+    }
+}
+
 void hid_demo_task(void *pvParameters)
 {
     // Demo 任务已停用自动音量发送，仅保留任务占位
@@ -349,14 +368,13 @@ void hid_demo_task(void *pvParameters)
  *
  * 初始化流程：
  *   1. NVS 初始化（存储配对信息等持久数据）
- *   2. 释放经典蓝牙内存（仅使用 BLE）
- *   3. 初始化蓝牙控制器
- *   4. 启用 BLE 模式
- *   5. 初始化并启用 Bluedroid 协议栈
- *   6. 初始化 HID Device Profile
- *   7. 注册 GAP 和 HID 回调
- *   8. 配置安全参数（配对/加密）
- *   9. 创建 Demo 任务
+ *   2. 初始化蓝牙控制器（双模 BTDM）
+ *   3. 启用双模（经典蓝牙 + BLE 共存）
+ *   4. 初始化并启用 Bluedroid 协议栈
+ *   5. 初始化 HID Device Profile
+ *   6. 注册 GAP 和 HID 回调
+ *   7. 配置安全参数（配对/加密）
+ *   8. 创建 Demo 任务
  */
 void app_main(void)
 {
@@ -370,10 +388,7 @@ void app_main(void)
     }
     ESP_ERROR_CHECK( ret );
 
-    // 第2步：释放经典蓝牙控制器内存（本项目仅使用 BLE，不需要经典蓝牙）
-    ESP_ERROR_CHECK(esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT));
-
-    // 第3步：初始化蓝牙控制器（使用默认配置）
+    // 第2步：初始化蓝牙控制器（使用默认配置，双模 BTDM，不再释放经典蓝牙内存）
     esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
     ret = esp_bt_controller_init(&bt_cfg);
     if (ret) {
@@ -381,8 +396,8 @@ void app_main(void)
         return;
     }
 
-    // 第4步：启用蓝牙控制器（仅 BLE 模式）
-    ret = esp_bt_controller_enable(ESP_BT_MODE_BLE);
+    // 第3步：启用蓝牙控制器（双模：经典蓝牙 + BLE 共存）
+    ret = esp_bt_controller_enable(ESP_BT_MODE_BTDM);
     if (ret) {
         ESP_LOGE(HID_DEMO_TAG, "%s enable controller failed", __func__);
         return;
@@ -430,6 +445,7 @@ void app_main(void)
     // 第9步：初始化 Web Bluetooth 配置服务（浏览器通过 BLE 读写 NVS）
     web_ble_config_init();
     ble_cent_init();
+    bt_hid_host_init();   /* 初始化经典蓝牙 HID Host（连接苹果键盘）*/
 
     // 第10步：创建 Demo 任务（栈大小 2048 字节，优先级 5）
     xTaskCreate(&hid_demo_task, "hid_task", 2048, NULL, 5, NULL);

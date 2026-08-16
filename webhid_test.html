@@ -161,7 +161,8 @@
 	<div class="card">
 		<h3>BLE Central — 扫描/连接外设</h3>
 		<div class="flex-row">
-			<button id="btnScan" class="scan" onclick="startScan()" disabled>扫描蓝牙设备</button>
+			<button id="btnScan" class="scan" onclick="startScan()" disabled>扫描 BLE 设备</button>
+			<button id="btnScanBt" class="scan" onclick="startBtScan()" disabled>扫描经典蓝牙</button>
 		</div>
 		<div id="devList"><span style="font-size:12px;color:#888;">点击扫描后，设备列表显示在这里</span></div>
 	</div>
@@ -204,17 +205,26 @@
 		}
 
 		function setUI (ok) {
-			['btnConnect', 'btnDisconnect', 'btnScan', 'btnSend', 'btnRead', 'btnVolUp', 'btnVolDown'].forEach((id, i) => { document.getElementById(id).disabled = ok ? (i === 0) : (i !== 0) })
+			['btnConnect', 'btnDisconnect', 'btnScan', 'btnScanBt', 'btnSend', 'btnRead', 'btnVolUp', 'btnVolDown'].forEach((id, i) => { document.getElementById(id).disabled = ok ? (i === 0) : (i !== 0) })
 			const s = document.getElementById('connStatus'); s.textContent = ok ? '已连接' : '未连接'; s.className = 'status ' + (ok ? 'ok' : 'idle')
 		}
 
-		// 解析 DEV|addr|rssi|name 格式行（过滤弱信号），只更新 devices，不立即渲染
+		// 解析 DEV|addr|type|rssi|name 格式行（BLE 设备，过滤弱信号），只更新 devices
 		function handleDevLog (line) {
 			const parts = line.split('|')
 			if (parts.length >= 5) {
 				const addr = parts[1], type = parts[2], rssi = parts[3], name = parts[4]
 				if (parseInt(rssi) < -60) return  // 只保留 RSSI >= -60 dBm 的强信号设备
 				devices[addr] = { name, rssi, type }
+			}
+		}
+
+		// 解析 BTDEV|addr|rssi|name 格式行（经典蓝牙设备）
+		function handleBtDevLog (line) {
+			const parts = line.split('|')
+			if (parts.length >= 4) {
+				const addr = parts[1], rssi = parts[2], name = parts[3]
+				devices[addr] = { name, rssi, type: 'bt' }
 			}
 		}
 
@@ -225,6 +235,13 @@
 			await sendCmd('SCAN')
 		}
 
+		// 开始经典蓝牙扫描
+		async function startBtScan () {
+			devices = {}
+			renderDevices()
+			await sendCmd('BTSCAN')
+		}
+
 		// 全量解析累积日志：DEV 行→设备列表（增量累积，不清空），其他行→日志区
 		function renderLogs (text) {
 			const logLines = []
@@ -233,6 +250,7 @@
 				const s = line.trim()
 				if (!s) continue
 				if (s.startsWith('DEV|')) handleDevLog(s)
+				else if (s.startsWith('BTDEV|')) handleBtDevLog(s)
 				else logLines.push(s)
 			}
 			const a = document.getElementById('logArea')
@@ -251,10 +269,14 @@
 				const item = document.createElement('div')
 				item.className = 'dev-item'
 				item.innerHTML = '<span class="info">' + addr + ' | ' + d.name + ' | RSSI:' + d.rssi + '</span>'
+				const isBt = (d.type === 'bt')
 				const btn = document.createElement('button')
 				btn.className = 'connect'
-				btn.textContent = '连接'
-				btn.onclick = () => { sendCmd('CONNECT ' + addr + ' ' + d.type); log('请求连接: ' + addr + ' type=' + d.type) }
+				btn.textContent = isBt ? 'BT连接' : '连接'
+				btn.onclick = () => {
+					if (isBt) { sendCmd('BTCONNECT ' + addr); log('请求 BT 连接: ' + addr) }
+					else { sendCmd('CONNECT ' + addr + ' ' + d.type); log('请求连接: ' + addr + ' type=' + d.type) }
+				}
 				item.appendChild(btn)
 				list.appendChild(item)
 			}
