@@ -75,7 +75,7 @@ static void hidd_event_callback(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *
  *                    BLE 广播参数配置
  * ===================================================================== */
 
-#define HIDD_DEVICE_NAME            "HID"      /*!< 设备名称（广播中显示的名称）*/
+#define HIDD_DEVICE_NAME            "BLE-HID"  /*!< 设备名称（广播中显示的名称）*/
 
 /**
  * @brief HID 服务 UUID（128-bit）

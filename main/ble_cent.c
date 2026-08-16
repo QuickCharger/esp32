@@ -22,7 +22,7 @@
 extern void hidd_adv_stop(void);
 extern void hidd_adv_start(void);
 extern void hidd_forward_mouse(uint8_t mouse_button, int8_t mickeys_x, int8_t mickeys_y, int8_t wheel, int8_t ac_pan);
-#define SCAN_DURATION 10  /* 扫描持续秒数 */
+#define SCAN_DURATION 5   /* 扫描持续秒数 */
 
 /* BLE HID 相关 UUID */
 #define HID_SVC_UUID_16      0x1812   /* HID 服务 */

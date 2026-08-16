@@ -208,11 +208,12 @@
 			const s = document.getElementById('connStatus'); s.textContent = ok ? '已连接' : '未连接'; s.className = 'status ' + (ok ? 'ok' : 'idle')
 		}
 
-		// 解析 DEV|addr|rssi|name 格式日志，添加到设备列表
+		// 解析 DEV|addr|rssi|name 格式日志，添加到设备列表（过滤弱信号）
 		function handleDevLog (line) {
 			const parts = line.split('|')
 			if (parts.length >= 5) {
 				const addr = parts[1], type = parts[2], rssi = parts[3], name = parts[4]
+				if (parseInt(rssi) < -60) return  // 只保留 RSSI >= -60 dBm 的强信号设备
 				devices[addr] = { name, rssi, type }
 				renderDevices()
 			}
@@ -240,7 +241,8 @@
 		async function connect () {
 			try {
 				log('搜索 BLE 设备...')
-				device = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: [SVC_UUID] })
+				// 按名称前缀过滤，只显示 ESP32（设备名 BLE-HID）
+				device = await navigator.bluetooth.requestDevice({ filters: [{ namePrefix: 'BLE-HID' }], optionalServices: [SVC_UUID] })
 				device.addEventListener('gattserverdisconnected', () => { log('设备断开'); setUI(false); clearInterval(logTimer) })
 				server = await device.gatt.connect()
 				const svc = await server.getPrimaryService(SVC_UUID)
