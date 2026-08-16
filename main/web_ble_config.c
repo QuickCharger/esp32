@@ -44,7 +44,8 @@ static const char *TAG = "WEB_BLE_CFG";
     0x21, 0x43, 0x21, 0x43, 0x21, 0x43, 0x65, 0x87
 
 #define WEB_CFG_APP_ID      0x7777   /* GATT 应用 ID */
-#define WEB_CFG_CHAR_LEN    64       /* Characteristic 最大长度 */
+#define WEB_CFG_CHAR_LEN    64       /* Characteristic 最大长度（单条日志/NVS 数据）*/
+#define WEB_CFG_LOG_BUF_LEN 512      /* 累积日志缓冲长度（供 HTML 轮询读取）*/
 
 /* =====================================================================
  *                    NVS 存储
@@ -105,8 +106,8 @@ static uint16_t svc_handle = 0;
 static uint16_t char_handle = 0;
 static esp_gatt_if_t g_web_cfg_gatts_if = ESP_GATT_IF_NONE;  /* 保存 GATT 接口句柄 */
 
-/* 日志内存缓冲（避免在 BLE 回调中写 NVS 导致崩溃）*/
-static char     g_log_buf[WEB_CFG_CHAR_LEN] = {0};
+/* 日志内存缓冲（累积多条日志，避免在 BLE 回调中写 NVS 导致崩溃）*/
+static char     g_log_buf[WEB_CFG_LOG_BUF_LEN] = {0};
 static uint16_t g_log_len = 0;
 
 /* =====================================================================
@@ -228,10 +229,19 @@ void web_ble_config_log(const char *format, ...)
     va_end(args);
     ESP_LOGI(TAG, "%s", buf);
 
-    // 2. 写入内存缓冲供 HTML 轮询
+    // 2. 追加写入累积日志缓冲供 HTML 轮询
     int len = strlen(buf);
-    memcpy(g_log_buf, buf, (len < WEB_CFG_CHAR_LEN) ? len : WEB_CFG_CHAR_LEN);
-    g_log_len = (len < WEB_CFG_CHAR_LEN) ? len : WEB_CFG_CHAR_LEN;
+    if (len >= WEB_CFG_CHAR_LEN) len = WEB_CFG_CHAR_LEN - 1;
+
+    // 剩余空间不足则清空重来（保证最新日志优先显示）
+    if (g_log_len + len + 2 > WEB_CFG_LOG_BUF_LEN) {
+        g_log_len = 0;
+        g_log_buf[0] = '\0';
+    }
+    memcpy(g_log_buf + g_log_len, buf, len);
+    g_log_len += len;
+    g_log_buf[g_log_len++] = '\n';
+    g_log_buf[g_log_len] = '\0';
 }
 
 /* =====================================================================

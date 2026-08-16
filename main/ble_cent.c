@@ -172,6 +172,7 @@ static void ble_cent_gattc_cb(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if
         web_ble_config_log("[CENT] 连接打开, status=%d, conn_id=%d",
                            param->open.status, param->open.conn_id);
         if (param->open.status == ESP_GATT_OK) {
+            g_scanning = false;   // 确保扫描状态正确（连接建立后扫描已结束）
             // 连接建立后停止广播，释放射频给连接
             hidd_adv_stop();
             // 启动服务发现
@@ -527,6 +528,12 @@ static void cccd_write_task(void *param)
 
 void ble_cent_connect(const char *addr_str, uint8_t addr_type)
 {
+    // 停止可能残留的扫描（释放射频给连接），并重置扫描状态
+    if (g_scanning) {
+        g_scanning = false;
+        esp_ble_gap_stop_scanning();
+    }
+
     esp_bd_addr_t addr;
     // 解析 "aabbccddeeff" 格式地址
     for (int i = 0; i < 6; i++) {

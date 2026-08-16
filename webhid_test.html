@@ -208,15 +208,31 @@
 			const s = document.getElementById('connStatus'); s.textContent = ok ? '已连接' : '未连接'; s.className = 'status ' + (ok ? 'ok' : 'idle')
 		}
 
-		// 解析 DEV|addr|rssi|name 格式日志，添加到设备列表（过滤弱信号）
+		// 解析 DEV|addr|rssi|name 格式行（过滤弱信号），只更新 devices，不立即渲染
 		function handleDevLog (line) {
 			const parts = line.split('|')
 			if (parts.length >= 5) {
 				const addr = parts[1], type = parts[2], rssi = parts[3], name = parts[4]
 				if (parseInt(rssi) < -60) return  // 只保留 RSSI >= -60 dBm 的强信号设备
 				devices[addr] = { name, rssi, type }
-				renderDevices()
 			}
+		}
+
+		// 全量解析累积日志：DEV 行→设备列表，其他行→日志区
+		function renderLogs (text) {
+			devices = {}
+			const logLines = []
+			const lines = text.split('\n')
+			for (const line of lines) {
+				const s = line.trim()
+				if (!s) continue
+				if (s.startsWith('DEV|')) handleDevLog(s)
+				else logLines.push(s)
+			}
+			const a = document.getElementById('logArea')
+			a.textContent = logLines.length ? logLines.join('\n') : '等待日志...'
+			a.scrollTop = a.scrollHeight
+			renderDevices()
 		}
 
 		function renderDevices () {
@@ -253,7 +269,7 @@
 					try {
 						const v = await characteristic.readValue()
 						const t = new TextDecoder().decode(new Uint8Array(v.buffer)).replace(/\0+$/, '').trim()
-						if (t && t !== lastLog) { lastLog = t; if (t.startsWith('DEV|')) { handleDevLog(t) } log(t) }
+						if (t && t !== lastLog) { lastLog = t; renderLogs(t) }
 					} catch (e) { }
 				}, 1000)
 			} catch (e) { log('失败: ' + e.message) }
